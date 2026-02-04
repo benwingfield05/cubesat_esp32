@@ -1,0 +1,20 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.espIdfPathWin": "C:\\Users\\benwi\\esp\\v5.5.2\\esp-idf",
+  "idf.pythonInstallPath": "C:\\Users\\benwi\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
+  "idf.openOcdConfigs": [
+    "board/esp32c6-lpcore-builtin.cfg"
+  ],
+  "idf.portWin": "COM6",
+  "idf.toolsPathWin": "C:\\Users\\benwi\\.espressif",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32c6"
+  },
+  "clangd.path": "C:\\Users\\benwi\\.espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=c:\\Users\\benwi\\esp\\cubesat_esp32\\build"
+  ],
+  "idf.flashType": "UART"
+}
