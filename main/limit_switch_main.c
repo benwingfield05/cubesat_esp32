@@ -37,7 +37,7 @@ static const char *TAG = "limit_switch";
    If you haven't added CONFIG_LIMIT_SWITCH_GPIO yet, replace it with a GPIO number:
      #define LIMIT_SWITCH_GPIO GPIO_NUM_9
 */
-#define LIMIT_SWITCH_GPIO GPIO_NUM_9
+#define LIMIT_SWITCH_GPIO GPIO_NUM_6
 
 /* Active level for the limit switch input:
    - If wired to GND with pull-up: active is LOW (0)
@@ -64,7 +64,6 @@ static void led_apply_state(void)
         led_strip_set_pixel(led_strip, 0, 0, 32, 0);
         led_strip_refresh(led_strip);
     } else {
-        ESP_LOGI(TAG, "Inactive: turning LED off");
         led_strip_clear(led_strip);
     }
 }
@@ -154,6 +153,7 @@ void app_main(void)
     while(1) {
         int level = gpio_get_level(LIMIT_SWITCH_GPIO);
         s_led_state = limit_switch_is_active(level) ? 1 : 0;
+        // If the LED state changes, apply it to the LED strip or GPIO
         led_apply_state();
         vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_MS));
     }
