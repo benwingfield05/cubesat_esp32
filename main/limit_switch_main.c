@@ -15,6 +15,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -39,8 +40,7 @@ static const char *TAG = "burn_wire:";
 */
 #define LIMIT_SWITCH_GPIO GPIO_NUM_6
 
-/* Output pin for the burn wire activation
-*/
+/* Output pin for the burn wire activation */
 #define GPIO_FIRE_EN GPIO_NUM_7
 
 /* Active level for the limit switch input:
@@ -48,6 +48,9 @@ static const char *TAG = "burn_wire:";
    - If wired to 3.3V with pull-down: active is HIGH (1)
 */
 #define LIMIT_SWITCH_ACTIVE_LEVEL 0
+
+/* Previously active flag for output limiting */
+static bool prev_active = false;
 
 /* Simple debounce delay to avoid chatter on mechanical switches (ms) */
 #define DEBOUNCE_MS 30
@@ -177,15 +180,33 @@ void app_main(void)
     /* 3) Configure the burn wire GPIO for output */
     configure_wire();
 
-    /* 3) Check the limit switch level in a loop and apply to LED in a loop with delay */
-    ESP_LOGI(TAG, "Started. LED_GPIO=%d (blink), FIRE_EN=%d, CMD=%d, active_level=%d",
+    /* 4) Check the limit switch level in a loop and apply to LED in a loop with delay */
+    ESP_LOGI(TAG, "Started. LED_GPIO=%d, FIRE_EN=%d, CMD=%d, active_level=%d",
             (int)LED_GPIO, (int)GPIO_FIRE_EN, (int)LIMIT_SWITCH_GPIO, LIMIT_SWITCH_ACTIVE_LEVEL);
+    
+    /* Initialize outputs once */
+    int level = gpio_get_level(LIMIT_SWITCH_GPIO);
+    bool active = limit_switch_is_active(level);
+    prev_active = active;
+    limit_switch_state = active ? 1 : 0;
+    burn_wire_apply_state();
+    led_apply_state();
+
     while(1) {
-        int level = gpio_get_level(LIMIT_SWITCH_GPIO);
-        limit_switch_state = limit_switch_is_active(level) ? 1 : 0;
-        // If the limit switch is detected, send a signal through the GPIO_FIRE_EN and activate the LED
-        burn_wire_apply_state();
-        led_apply_state();
+        level = gpio_get_level(LIMIT_SWITCH_GPIO);
+        active = limit_switch_is_active(level);
+
+        /* Only activate on change */
+        if (active != prev_active) {
+            prev_active = active;
+            limit_switch_state = active ? 1 : 0;
+
+            ESP_LOGI(TAG, "Limit switch %s (level=%d)",
+                     active ? "ACTIVE" : "INACTIVE", level);
+
+            burn_wire_apply_state();
+            led_apply_state();
+        }
         vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_MS));
     }
 }
