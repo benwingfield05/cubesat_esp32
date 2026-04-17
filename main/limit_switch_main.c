@@ -27,7 +27,7 @@
 #include "led_strip.h"
 #include "sdkconfig.h"
 
-static const char *TAG = "burn_wire:";
+static const char *TAG = "burn_wire";
 
 /* User-configurable GPIOs */
 
@@ -38,16 +38,16 @@ static const char *TAG = "burn_wire:";
    If you haven't added CONFIG_LIMIT_SWITCH_GPIO yet, replace it with a GPIO number:
      #define LIMIT_SWITCH_GPIO GPIO_NUM_9
 */
-#define LIMIT_SWITCH_GPIO GPIO_NUM_6
+#define LIMIT_SWITCH_GPIO GPIO_NUM_0
 
 /* Output pin for the burn wire activation */
 #define GPIO_FIRE_EN GPIO_NUM_7
 
 /* Active level for the limit switch input:
-   - If wired to GND with pull-up: active is LOW (0)
-   - If wired to 3.3V with pull-down: active is HIGH (1)
+   - Push-down = 0
+   - Push-down = 1
 */
-#define LIMIT_SWITCH_ACTIVE_LEVEL 0
+#define LIMIT_SWITCH_ACTIVE_LEVEL 1
 
 /* Previously active flag for output limiting */
 static bool prev_active = false;
@@ -158,10 +158,10 @@ static void burn_wire_apply_state(void)
 {
     if (limit_switch_state) {
         // Pulse FIRE_EN regardless of whether still held afterward
-        ESP_LOGI(TAG, "Activating FIRE_EN");
+        ESP_LOGI(TAG, "Status: PANELS_DEPLOYED \n\tActivating burn wire");
         gpio_set_level(GPIO_FIRE_EN, 1);
     } else {
-        ESP_LOGI(TAG, "Deactivating FIRE_EN");
+        ESP_LOGI(TAG, "STATUS: PANELS_FOLDED \n\tDeactivating burn wire");
         gpio_set_level(GPIO_FIRE_EN, 0);
     }
 }
