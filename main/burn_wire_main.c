@@ -1,17 +1,4 @@
-/* burn_wire_console_trigger.c
-
-   ESP-IDF example:
-   - waits for a console activation key
-   - after valid input, waits 30 seconds
-   - activates GPIO_FIRE_EN for 5 seconds
-   - monitors a limit switch and reports:
-       * PANELS_CLOSED   when switch is pressed
-       * PANELS_DEPLOYED when switch is not pressed
-
-   Use with idf.py monitor and type:
-       y
-   then press Enter.
-*/
+/* burn_wire_console_trigger.c */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,29 +26,29 @@ static const char *TAG = "burn_wire";
 #define LIMIT_SWITCH_GPIO GPIO_NUM_0
 
 /* Assuming switch is wired to GND with pull-up enabled:
-   pressed   -> 0
-   released  -> 1
-   If your wiring is reversed, change this to 1.
+   pressed   -> 0  (PANELS_CLOSED)
+   released  -> 1  (PANELS_DEPLOYED)
 */
-#define LIMIT_SWITCH_PRESSED_LEVEL 1
+#define LIMIT_SWITCH_PRESSED_LEVEL 0
 
-/* Console activation settings */
-#define ACTIVATION_KEY     'y'
-#define CANCEL_KEY         'c'
-#define ARM_DELAY_SEC      1800
-#define FIRE_DURATION_SEC  10
+/* Console settings */
+#define ACTIVATION_KEY      'y'
+#define CANCEL_KEY          'c'
+#define ARM_DELAY_SEC       10
+#define FIRE_DURATION_SEC   10
 
 /* Polling / debounce */
-#define LIMIT_SWITCH_POLL_MS  30
+#define LIMIT_SWITCH_POLL_MS      30
+#define LIMIT_SWITCH_STABLE_COUNT 3
 
 /* LED state */
 static uint8_t status_led_state = 0;
 
-/* Prevent overlapping fire sequences */
+/* Shared state */
 static volatile bool fire_sequence_running = false;
-
-/* Enable cancellation of arming the burn wire */
 static volatile bool cancel_requested = false;
+static volatile bool panels_closed = false;
+static volatile bool deployed_check = false;
 
 #ifdef CONFIG_BLINK_LED_STRIP
 static led_strip_handle_t led_strip;
@@ -69,7 +56,6 @@ static led_strip_handle_t led_strip;
 static void led_apply_state(void)
 {
     if (status_led_state) {
-        /* Green while FIRE_EN is active */
         led_strip_set_pixel(led_strip, 0, 0, 32, 0);
         led_strip_refresh(led_strip);
     } else {
@@ -155,9 +141,9 @@ static inline bool limit_switch_pressed(int level)
     return (level == LIMIT_SWITCH_PRESSED_LEVEL);
 }
 
-static void report_panel_state(bool pressed)
+static void report_panel_state(bool closed)
 {
-    if (pressed) {
+    if (closed) {
         ESP_LOGI(TAG, "STATUS: PANELS_CLOSED");
     } else {
         ESP_LOGI(TAG, "STATUS: PANELS_DEPLOYED");
@@ -166,63 +152,108 @@ static void report_panel_state(bool pressed)
 
 static bool is_activation_key(char c)
 {
-    return (c == ACTIVATION_KEY);
+    return (c == ACTIVATION_KEY || c == 'Y');
 }
 
 static bool is_cancel_key(char c)
 {
-    return (c == CANCEL_KEY);
+    return (c == CANCEL_KEY || c == 'C');
+}
+
+static void cleanup_fire_output(void)
+{
+    gpio_set_level(GPIO_FIRE_EN, 0);
+    set_status_led(false);
 }
 
 static bool cancellation_requested(void)
-{
+{   
+    if (deployed_check) {
+        return cancel_requested || !panels_closed;
+    }
     return cancel_requested;
 }
 
-static void activate_burn_wire_sequence(void)
+static void fire_sequence_task(void *pvParameters)
 {
-    fire_sequence_running = true;
+    cancel_requested = false;
+
+    if (deployed_check && !panels_closed) {
+        ESP_LOGW(TAG, "Activation rejected: panels are not closed.");
+        fire_sequence_running = false;
+        vTaskDelete(NULL);
+        return;
+    }
 
     ESP_LOGW(TAG, "Activation accepted. Waiting %d seconds before firing...", ARM_DELAY_SEC);
 
     for (int i = ARM_DELAY_SEC; i > 0; --i) {
         if (cancellation_requested()) {
-            ESP_LOGW(TAG, "Sequence cancelled during arming delay.");
-            gpio_set_level(GPIO_FIRE_EN, 0);
+            ESP_LOGW(TAG, "Sequence canceled during arming delay.");
+            cleanup_fire_output();
             fire_sequence_running = false;
             cancel_requested = false;
+            vTaskDelete(NULL);
             return;
         }
 
-        if ((i % 60 == 0) || (i <= 10)) {
+        if ((i % 30 == 0) || (i <= 10)) {
             ESP_LOGI(TAG, "T-minus %d minute%s, %d second%s",
                      i / 60, ((i / 60) == 1) ? "" : "s",
                      i % 60, ((i % 60) == 1) ? "" : "s");
         }
+
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
     if (cancellation_requested()) {
-            ESP_LOGW(TAG, "Sequence cancelled during arming delay.");
-            gpio_set_level(GPIO_FIRE_EN, 0);
-            fire_sequence_running = false;
-            cancel_requested = false;
-            return;
+        ESP_LOGW(TAG, "Sequence canceled before firing.");
+        cleanup_fire_output();
+        fire_sequence_running = false;
+        cancel_requested = false;
+        vTaskDelete(NULL);
+        return;
     }
 
     ESP_LOGW(TAG, "Activating GPIO_FIRE_EN for %d seconds.", FIRE_DURATION_SEC);
     gpio_set_level(GPIO_FIRE_EN, 1);
     set_status_led(true);
 
-    vTaskDelay(pdMS_TO_TICKS(FIRE_DURATION_SEC * 1000));
+    /* Check for cancellation every 100 ms while firing */
+    for (int i = 0; i < FIRE_DURATION_SEC * 100; ++i) {
+        if (cancellation_requested()) {
+            ESP_LOGW(TAG, "Sequence canceled during firing.");
+            cleanup_fire_output();
+            fire_sequence_running = false;
+            cancel_requested = false;
+            vTaskDelete(NULL);
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 
-    gpio_set_level(GPIO_FIRE_EN, 0);
-    set_status_led(false);
-
+    cleanup_fire_output();
     ESP_LOGI(TAG, "Burn complete. GPIO_FIRE_EN deactivated.");
 
     fire_sequence_running = false;
     cancel_requested = false;
+    vTaskDelete(NULL);
+}
+
+static void start_fire_sequence(void)
+{
+    if (fire_sequence_running) {
+        ESP_LOGW(TAG, "Fire sequence already in progress; activation ignored.");
+        return;
+    }
+
+    fire_sequence_running = true;
+
+    BaseType_t ok = xTaskCreate(fire_sequence_task, "fire_sequence_task", 4096, NULL, 5, NULL);
+    if (ok != pdPASS) {
+        fire_sequence_running = false;
+        ESP_LOGE(TAG, "Failed to create fire_sequence_task");
+    }
 }
 
 static void console_task(void *pvParameters)
@@ -238,22 +269,14 @@ static void console_task(void *pvParameters)
         }
 
         if (fgets(line, sizeof(line), stdin) == NULL) {
-            /* Do not spam the prompt if stdin is not ready */
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
-        /* Input arrived, so the next loop may show the prompt again */
         prompt_shown = false;
 
-        if (fire_sequence_running) {
-            ESP_LOGW(TAG, "Fire sequence already in progress; input ignored.");
-            continue;
-        }
-        
-        // If the activation key is given, go with the burnwire sequence
         if (is_activation_key(line[0])) {
-            activate_burn_wire_sequence();
+            start_fire_sequence();
         } else if (is_cancel_key(line[0])) {
             if (fire_sequence_running) {
                 cancel_requested = true;
@@ -263,7 +286,7 @@ static void console_task(void *pvParameters)
             }
         } else {
             if (line[0] == '\n' || line[0] == '\0') {
-                ESP_LOGI(TAG, "No activation key entered.");
+                ESP_LOGI(TAG, "No command entered.");
             } else {
                 ESP_LOGI(TAG, "Ignored input: %c", line[0]);
             }
@@ -273,20 +296,40 @@ static void console_task(void *pvParameters)
 
 static void limit_switch_task(void *pvParameters)
 {
-    int level = gpio_get_level(LIMIT_SWITCH_GPIO);
-    bool pressed = limit_switch_pressed(level);
-    bool prev_pressed = pressed;
+    int raw_level = gpio_get_level(LIMIT_SWITCH_GPIO);
+    bool candidate_closed = limit_switch_pressed(raw_level);
+    bool stable_closed = candidate_closed;
+    int stable_count = 0;
 
-    /* Report initial state once */
-    report_panel_state(pressed);
+    panels_closed = stable_closed;
+    ESP_LOGI(TAG, "Initial limit switch raw level=%d", raw_level);
+    report_panel_state(stable_closed);
 
     while (1) {
-        level = gpio_get_level(LIMIT_SWITCH_GPIO);
-        pressed = limit_switch_pressed(level);
+        raw_level = gpio_get_level(LIMIT_SWITCH_GPIO);
+        bool current_closed = limit_switch_pressed(raw_level);
 
-        if (pressed != prev_pressed) {
-            prev_pressed = pressed;
-            report_panel_state(pressed);
+        if (current_closed == candidate_closed) {
+            if (stable_count < LIMIT_SWITCH_STABLE_COUNT) {
+                stable_count++;
+            }
+        } else {
+            candidate_closed = current_closed;
+            stable_count = 1;
+        }
+
+        if ((stable_count >= LIMIT_SWITCH_STABLE_COUNT) &&
+            (stable_closed != candidate_closed)) {
+            stable_closed = candidate_closed;
+            panels_closed = stable_closed;
+
+            ESP_LOGI(TAG, "Stable limit switch change: raw=%d", raw_level);
+            report_panel_state(stable_closed);
+
+            if (fire_sequence_running && !panels_closed) {
+                cancel_requested = true;
+                ESP_LOGW(TAG, "Auto-cancel requested: panels no longer closed.");
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(LIMIT_SWITCH_POLL_MS));
@@ -300,9 +343,19 @@ void app_main(void)
     configure_limit_switch();
     set_status_led(false);
 
+    /* Initialize panel state once before tasks start */
+    panels_closed = limit_switch_pressed(gpio_get_level(LIMIT_SWITCH_GPIO));
+
     ESP_LOGI(TAG, "Started. LED_GPIO=%d, FIRE_EN=%d, LIMIT_SWITCH_GPIO=%d",
              (int)LED_GPIO, (int)GPIO_FIRE_EN, (int)LIMIT_SWITCH_GPIO);
 
-    xTaskCreate(console_task, "console_task", 4096, NULL, 5, NULL);
-    xTaskCreate(limit_switch_task, "limit_switch_task", 2048, NULL, 5, NULL);
+    BaseType_t ok1 = xTaskCreate(console_task, "console_task", 4096, NULL, 5, NULL);
+    BaseType_t ok2 = xTaskCreate(limit_switch_task, "limit_switch_task", 3072, NULL, 5, NULL);
+
+    if (ok1 != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create console_task");
+    }
+    if (ok2 != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create limit_switch_task");
+    }
 }
